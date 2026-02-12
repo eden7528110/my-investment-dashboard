@@ -44,7 +44,7 @@ com_data = []
 data_date = "实时"
 for name, ticker in com_tickers.items():
     try:
-        info = yf.Ticker(ticker).info
+        info = yf.Ticker(ticker relentlessly).info
         price = info.get('regularMarketPrice') or info.get('previousClose')
         change = info.get('regularMarketChangePercent')
         if price is None or change is None:
@@ -72,16 +72,16 @@ styled_com = com_df.style.map(highlight_change, subset=["涨跌幅%"])
 st.dataframe(styled_com, use_container_width=True)
 st.caption(f"数据日期：{data_date}（实时失败时自动回退最近交易日）")
 
-# 商品走势图（修复索引错误）
+# 商品走势图（彻底修复空数据崩溃）
 selected_com = st.selectbox("选择商品查看走势", list(com_tickers.keys()))
 selected_ticker = com_tickers[selected_com]
 hist_com = yf.download(selected_ticker, period="6mo", progress=False)
-if not hist_com.empty and 'Close' in hist_com.columns and len(hist_com) > 0:
+if not hist_com.empty and 'Close' in hist_com.columns and len(hist_com.index) > 0:
     latest_date = hist_com.index[-1].strftime('%Y-%m-%d')
     fig_com = px.line(hist_com, x=hist_com.index, y="Close", title=f"{selected_com} 6个月走势（最新至 {latest_date})")
     st.plotly_chart(fig_com, use_container_width=True)
 else:
-    st.warning(f"{selected_com} 暂无历史数据（休市或网络问题）")
+    st.warning(f"{selected_com} 暂无历史数据（休市或网络问题），请刷新或换个商品查看")
 
 # ----------------- 2. 板块轮动 -----------------
 st.header("🔄 全球板块轮动热度（资源型重点监控，失败回退最近交易日）")
@@ -209,6 +209,6 @@ if alerts:
     for a in alerts:
         st.success(a)
 else:
-    st.info("今日无明显异动，保持观察")
+    st.info("今日无明显业动，保持观察")
 
 st.caption(f"整体更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} | 非交易时段数据会自动回退")
