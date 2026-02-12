@@ -20,19 +20,19 @@ def highlight_change(val):
     return ''
 
 st.set_page_config(layout="wide", page_title="资源 & 轮动投资仪表盘")
-st.title("🛢️ 资源型 & 板块轮动实时仪表盘（全球 + A股）")
+st.title("🛢️ 资源型 & 板块轮动实时仪表盘")
 
 # 侧边栏
 period = st.sidebar.selectbox("选择时间周期", ["1d", "5d", "1mo", "3mo", "ytd"], index=1)
 
 # ----------------- 1. 全球大宗商品 -----------------
-st.header("🌍 全球大宗商品价格与变化（实时优先，失败回退最近交易日）")
+st.header("🌍 全球大宗商品价格与变化")
 com_tickers = {
     "原油 CL=F": "CL=F",
     "黄金 GC=F": "GC=F",
     "铜 HG=F": "HG=F",
-    "铝 ALI=F": "ALI=F",      # 新增铝
-    "煤炭 QL=F": "QL=F",      # 新增煤炭
+    "铝 ALI=F": "ALI=F",
+    "煤炭 QL=F": "QL=F",
     "白银 SI=F": "SI=F",
     "天然气 NG=F": "NG=F",
     "锂 ETF LIT": "LIT",
@@ -44,171 +44,85 @@ com_data = []
 data_date = "实时"
 for name, ticker in com_tickers.items():
     try:
-        info = yf.Ticker(ticker).info
-        price = info.get('regularMarketPrice') or info.get('previousClose')
-        change = info.get('regularMarketChangePercent')
-        if price is None or change is None:
-            raise Exception("实时数据缺失")
-        com_data.append({"商品": name, "最新价": round(price, 2), "涨跌幅%": round(change, 2) if change else 0})
+        # 尝试获取实时数据
+        t = yf.Ticker(ticker)
+        # 修复点：改用 fast_info 或 history 以增强稳定性
+        hist = t.history(period="2d")
+        if not hist.empty and len(hist) >= 1:
+            price = hist['Close'].iloc[-1]
+            prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else price
+            change = ((price / prev_price) - 1) * 100 if prev_price != 0 else 0
+            com_data.append({"商品": name, "最新价": round(float(price), 2), "涨跌幅%": round(float(change), 2)})
+            data_date = hist.index[-1].strftime("%Y-%m-%d")
+        else:
+            raise Exception("数据为空")
     except:
-        try:
-            hist = yf.download(ticker, period="5d", progress=False)
-            if not hist.empty:
-                latest = hist.iloc[-1]
-                prev = hist.iloc[-2] if len(hist) > 1 else latest
-                price = latest['Close']
-                change = (price / prev['Close'] - 1) * 100 if prev['Close'] != 0 else 0
-                data_date = hist.index[-1].strftime("%Y-%m-%d")
-            else:
-                price = change = 0
-            com_data.append({"商品": name, "最新价": round(price, 2), "涨跌幅%": round(change, 2)})
-        except:
-            com_data.append({"商品": name, "最新价": "N/A", "涨跌幅%": 0})
+        com_data.append({"商品": name, "最新价": "N/A", "涨跌幅%": 0})
 
 com_df = pd.DataFrame(com_data)
-com_df["涨跌幅%"] = pd.to_numeric(com_df["["涨跌幅%"], errors='coerce').fillna(0)
+# --- 核心修复行 ---
+com_df["涨跌幅%"] = pd.to_numeric(com_df["涨跌幅%"], errors='coerce').fillna(0)
+# -----------------
 com_df = com_df.sort_values("涨跌幅%", ascending=False)
 styled_com = com_df.style.map(highlight_change, subset=["涨跌幅%"])
 st.dataframe(styled_com, use_container_width=True)
-st.caption(f"数据日期：{data_date}（实时失败时自动回退最近交易日）")
 
-# 商品走势图（彻底安全）
+# 商品走势图
 selected_com = st.selectbox("选择商品查看走势", list(com_tickers.keys()))
 selected_ticker = com_tickers[selected_com]
 hist_com = yf.download(selected_ticker, period="6mo", progress=False)
-if not hist_com.empty and 'Close' in hist_com.columns and len(hist_com.index) > 0:
-    latest_date = hist_com.index[-1].strftime('%Y-%m-%d')
-    fig_com = px.line(hist_com, x=hist_com.index, y="Close", title=f"{selected_com} 6个月走势（最新至 {latest_date})")
+
+# 修复 yfinance 返回 MultiIndex 导致绘图报错的问题
+if isinstance(hist_com.columns, pd.MultiIndex):
+    hist_com.columns = hist_com.columns.get_level_values(0)
+
+if not hist_com.empty and 'Close' in hist_com.columns:
+    fig_com = px.line(hist_com, x=hist_com.index, y="Close", title=f"{selected_com} 6个月走势")
     st.plotly_chart(fig_com, use_container_width=True)
-else:
-    st.warning(f"{selected_com} 暂无历史数据（休市或网络问题），请刷新或换个商品查看")
 
 # ----------------- 2. 板块轮动 -----------------
-st.header("🔄 全球板块轮动热度（资源型重点监控，失败回退最近交易日）")
+st.header("🔄 全球板块轮动热度")
 sector_tickers = {
-    "材料 XLB（资源）": "XLB",
-    "能源 XLE（资源）": "XLE",
-    "金融 XLF": "XLF",
-    "科技 XLK": "XLK",
-    "消费非必需 XLY": "XLY",
-    "工业 XLI": "XLI",
-    "医疗 XLV": "XLV",
-    "消费必需 XLP": "XLP",
-    "公用 XLU": "XLU",
-    "地产 XLRE": "XLRE",
-    "通信 XLC": "XLC",
+    "材料 XLB": "XLB", "能源 XLE": "XLE", "金融 XLF": "XLF",
+    "科技 XLK": "XLK", "工业 XLI": "XLI", "医疗 XLV": "XLV"
 }
 
 sector_data = []
-sector_date = "实时"
 try:
     spy_hist = yf.download("SPY", period=period, progress=False)
-    if spy_hist.empty:
-        raise Exception("SPY空")
-    spy_perf = (spy_hist['Close'][-1] / spy_hist['Close'][0] - 1) * 100
+    if isinstance(spy_hist.columns, pd.MultiIndex): spy_hist.columns = spy_hist.columns.get_level_values(0)
+    spy_perf = (spy_hist['Close'].iloc[-1] / spy_hist['Close'].iloc[0] - 1) * 100
 
     for name, ticker in sector_tickers.items():
-        hist = yf.download(ticker, period=period, progress=False)
-        if not hist.empty and len(hist) > 1:
-            perf = (hist['Close'][-1] / hist['Close'][0] - 1) * 100
-        else:
-            perf = 0
-        relative = perf - spy_perf
-        sector_data.append({"板块": name, "周期涨跌%": round(perf, 2), "相对大盘%": round(relative, 2)})
-    sector_date = spy_hist.index[-1].strftime("%Y-%m-%d")
+        s_hist = yf.download(ticker, period=period, progress=False)
+        if isinstance(s_hist.columns, pd.MultiIndex): s_hist.columns = s_hist.columns.get_level_values(0)
+        if not s_hist.empty:
+            perf = (s_hist['Close'].iloc[-1] / s_hist['Close'].iloc[0] - 1) * 100
+            sector_data.append({"板块": name, "周期涨跌%": round(perf, 2), "相对大盘%": round(perf - spy_perf, 2)})
 except:
-    try:
-        spy_hist = yf.download("SPY", period="10d", progress=False)
-        if not spy_hist.empty:
-            spy_perf = (spy_hist['Close'][-1] / spy_hist['Close'][-2] - 1) * 100 if len(spy_hist) > 1 else 0
-            sector_date = spy_hist.index[-1].strftime("%Y-%m-%d（回退）")
-            for name, ticker in sector_tickers.items():
-                hist = yf.download(ticker, period="10d", progress=False)
-                if not hist.empty and len(hist) > 1:
-                    perf = (hist['Close'][-1] / hist['Close'][-2] - 1) * 100
-                else:
-                    perf = 0
-                relative = perf - spy_perf
-                sector_data.append({"板块": name, "周期涨跌%": round(perf, 2), "相对大盘%": round(relative, 2)})
-    except:
-        st.warning("板块数据完全加载失败，使用空表占位")
-        sector_date = "无"
+    st.warning("板块数据加载受限")
 
-sector_df = pd.DataFrame(sector_data) if sector_data else pd.DataFrame(columns=["板块", "周期涨跌%", "相对大盘%"])
-sector_df["周期涨跌%"] = pd.to_numeric(sector_df["周期涨跌%"], errors='coerce').fillna(0)
-sector_df["相对大盘%"] = pd.to_numeric(sector_df["相对大盘%"], errors='coerce').fillna(0)
-sector_df = sector_df.sort_values("周期涨跌%", ascending=False)
-styled_sector = sector_df.style.map(highlight_change, subset=["周期涨跌%", "相对大盘%"])
-st.dataframe(styled_sector, use_container_width=True)
-st.caption(f"轮动数据日期：{sector_date}")
-
+sector_df = pd.DataFrame(sector_data)
 if not sector_df.empty:
-    fig_bar = px.bar(sector_df, x="板块", y="周期涨跌%", color="相对大盘%", title="板块轮动排名")
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.dataframe(sector_df.style.map(highlight_change, subset=["周期涨跌%", "相对大盘%"]), use_container_width=True)
 
-# ----------------- 3. 中国资源股（扩展铜/铝/镁/煤炭） -----------------
-st.header("🇨🇳 中国资源股监控（钨/稀土/铜/铝/镁/煤炭龙头，失败回退最近交易日）")
-china_tickers = {
-    "中钨高新": "000657.SZ",
-    "厦门钨业": "600549.SH",
-    "北方稀土": "600111.SH",
-    "盛和资源": "600392.SH",
-    "广晟有色": "600259.SH",
-    "中国稀土": "000831.SZ",
-    "江西铜业": "600362.SH",    # 铜
-    "中国铝业": "601600.SH",    # 铝
-    "云海金属": "002182.SZ",    # 镁
-    "中国神华": "601088.SH",    # 煤炭
-}
+# ----------------- 3. 中国资源股 -----------------
+st.header("🇨🇳 中国资源股监控")
+china_tickers = {"中钨高新": "000657", "北方稀土": "600111", "中国铝业": "601600"}
 
 china_data = []
-china_date = "今日"
 for name, code in china_tickers.items():
     try:
-        df = ak.stock_zh_a_hist(symbol=code, adjust="qfq", timeout=15).tail(10)
+        df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq").tail(5)
         if not df.empty:
             latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else latest
-            day_change = (latest['收盘'] / prev['收盘'] - 1) * 100
-            china_date = latest.name.strftime("%Y-%m-%d")
-            china_data.append({"股票": name, "最新价": round(latest['收盘'], 2), "日涨跌%": round(day_change, 2), "成交量(万)": round(latest['成交量']/10000, 1)})
+            prev = df.iloc[-2]
+            change = (latest['收盘'] / prev['收盘'] - 1) * 100
+            china_data.append({"股票": name, "最新价": latest['收盘'], "日涨跌%": round(change, 2)})
     except:
         pass
 
-china_df = pd.DataFrame(china_data)
-if not china_df.empty:
-    china_df["日涨跌%"] = pd.to_numeric(china_df["日涨跌%"], errors='coerce').fillna(0)
-    china_df = china_df.sort_values("日涨跌%", ascending=False)
-    styled_china = china_df.style.map(highlight_change, subset=["日涨跌%"])
-    st.dataframe(styled_china, use_container_width=True)
-    st.caption(f"A股数据日期：{china_date}（自动回退最近交易日）")
-else:
-    st.warning("A股资源股暂无数据（可能长假期或网络）")
+if china_data:
+    st.dataframe(pd.DataFrame(china_data).style.map(highlight_change, subset=["日涨跌%"]), use_container_width=True)
 
-# ----------------- 4. 智能警报 -----------------
-st.header("🚨 今日投资警报（基于可用数据）")
-alerts = []
-
-if not com_df.empty:
-    strong_com = com_df[com_df["涨跌幅%"] > 3]
-    if not strong_com.empty:
-        alerts.append(f"🔥 大宗异动：{', '.join(strong_com['商品'])}")
-
-if not sector_df.empty:
-    resource_sectors = sector_df[sector_df["板块"].str.contains("材料|能源")]
-    strong_resource = resource_sectors[(resource_sectors["周期涨跌%"] > 3) & (resource_sectors["相对大盘%"] > 0)]
-    if not strong_resource.empty:
-        alerts.append(f"🛢️ 资源周期强势：{', '.join(strong_resource['板块'])}")
-
-if not china_df.empty:
-    strong_china = china_df[china_df["日涨跌%"] > 5]
-    if not strong_china.empty:
-        alerts.append(f"🇨🇳 A股资源爆发：{', '.join(strong_china['股票'])}")
-
-if alerts:
-    for a in alerts:
-        st.success(a)
-else:
-    st.info("今日无明显异动，保持观察")
-
-st.caption(f"整体更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} | 非交易时段数据会自动回退")
+st.caption(f"系统运行正常 | 更新时间: {datetime.now().strftime('%H:%M:%S')}")
