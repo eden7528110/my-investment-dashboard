@@ -3,7 +3,7 @@ import yfinance as yf
 import akshare as ak
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # 高亮函数
 def highlight_change(val):
@@ -42,14 +42,12 @@ com_data = []
 data_date = "实时"
 for name, ticker in com_tickers.items():
     try:
-        ticker_obj = yf.Ticker(ticker)
-        info = ticker_obj.info
+        info = yf.Ticker(ticker).info
         price = info.get('regularMarketPrice') or info.get('previousClose')
         change = info.get('regularMarketChangePercent')
-        if price is None or change is None:  # 实时失败，回退历史
+        if price is None or change is None:
             raise Exception("实时数据缺失")
         com_data.append({"商品": name, "最新价": round(price, 2), "涨跌幅%": round(change, 2) if change else 0})
-        data_date = "实时"
     except:
         try:
             hist = yf.download(ticker, period="5d", progress=False)
@@ -72,7 +70,7 @@ styled_com = com_df.style.map(highlight_change, subset=["涨跌幅%"])
 st.dataframe(styled_com, use_container_width=True)
 st.caption(f"数据日期：{data_date}（实时失败时自动回退最近交易日）")
 
-# 商品走势图（强制显示历史）
+# 商品走势图
 selected_com = st.selectbox("选择商品查看走势", list(com_tickers.keys()))
 selected_ticker = com_tickers[selected_com]
 hist_com = yf.download(selected_ticker, period="6mo", progress=False)
@@ -116,7 +114,6 @@ try:
         sector_data.append({"板块": name, "周期涨跌%": round(perf, 2), "相对大盘%": round(relative, 2)})
     sector_date = spy_hist.index[-1].strftime("%Y-%m-%d")
 except:
-    # 回退到最近5个交易日
     try:
         spy_hist = yf.download("SPY", period="10d", progress=False)
         if not spy_hist.empty:
@@ -161,8 +158,50 @@ china_data = []
 china_date = "今日"
 for name, code in china_tickers.items():
     try:
-        df = ak.stock_zh_a_hist(symbol=code, adjust="qfq", timeout=15).tail(10)  # 多取几天防休市
+        df = ak.stock_zh_a_hist(symbol=code, adjust="qfq", timeout=15).tail(10)
         if not df.empty:
             latest = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else latest
-            day_change = (latest['收盘'] / prev['收盘'] - 1) *
+            day_change = (latest['收盘'] / prev['收盘'] - 1) * 100
+            china_date = latest.name.strftime("%Y-%m-%d")
+            china_data.append({"股票": name, "最新价": round(latest['收盘'], 2), "日涨跌%": round(day_change, 2), "成交量(万)": round(latest['成交量']/10000, 1)})
+    except:
+        pass
+
+china_df = pd.DataFrame(china_data)
+if not china_df.empty:
+    china_df["日涨跌%"] = pd.to_numeric(china_df["日涨跌%"], errors='coerce').fillna(0)
+    china_df = china_df.sort_values("日涨跌%", ascending=False)
+    styled_china = china_df.style.map(highlight_change, subset=["日涨跌%"])
+    st.dataframe(styled_china, use_container_width=True)
+    st.caption(f"A股数据日期：{china_date}（自动回退最近交易日）")
+else:
+    st.warning("A股资源股暂无数据（可能长假期或网络）")
+
+# ----------------- 4. 智能警报 -----------------
+st.header("🚨 今日投资警报（基于可用数据）")
+alerts = []
+
+if not com_df.empty:
+    strong_com = com_df[com_df["涨跌幅%"] > 3]
+    if not strong_com.empty:
+        alerts.append(f"🔥 大宗异动：{', '.join(strong_com['商品'])}")
+
+if not sector_df.empty:
+    resource_sectors = sector_df[sector_df["板块"].str.contains("材料|能源")]
+    strong_resource = resource_sectors[(resource_sectors["周期涨跌%"] > 3) & (resource_sectors["相对大盘%"] > 0)]
+    if not strong_resource.empty:
+        alerts.append(f"🛢️ 资源周期强势：{', '.join(strong_resource['板块'])}")
+
+if not china_df.empty:
+    strong_china = china_df[china_df["日涨跌%"] > 5]
+    if not strong_china.empty:
+        alerts.append(f"🇨🇳 A股资源爆发：{', '.join(strong_china['股票'])}")
+
+if alerts:
+    for a in alerts:
+        st.success(a)
+else:
+    st.info("今日无明显异动，保持观察")
+
+st.caption(f"整体更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} | 非交易时段数据会自动回退")
