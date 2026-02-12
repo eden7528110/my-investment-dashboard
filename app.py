@@ -31,6 +31,8 @@ com_tickers = {
     "原油 CL=F": "CL=F",
     "黄金 GC=F": "GC=F",
     "铜 HG=F": "HG=F",
+    "铝 ALI=F": "ALI=F",      # 新增铝
+    "煤炭 QL=F": "QL=F",      # 新增煤炭
     "白银 SI=F": "SI=F",
     "天然气 NG=F": "NG=F",
     "锂 ETF LIT": "LIT",
@@ -61,7 +63,9 @@ for name, ticker in com_tickers.items():
                 price = change = 0
             com_data.append({"商品": name, "最新价": round(price, 2), "涨跌幅%": round(change, 2)})
         except:
-            com_data.append({"商品": name, "最新价": "N/A", "涨跌幅%": 0})
+            com_data.append({"商品": name, "最新价": "N/A", "
+
+涨跌幅%": 0})
 
 com_df = pd.DataFrame(com_data)
 com_df["涨跌幅%"] = pd.to_numeric(com_df["涨跌幅%"], errors='coerce').fillna(0)
@@ -70,15 +74,16 @@ styled_com = com_df.style.map(highlight_change, subset=["涨跌幅%"])
 st.dataframe(styled_com, use_container_width=True)
 st.caption(f"数据日期：{data_date}（实时失败时自动回退最近交易日）")
 
-# 商品走势图
+# 商品走势图（修复空数据标题崩溃）
 selected_com = st.selectbox("选择商品查看走势", list(com_tickers.keys()))
 selected_ticker = com_tickers[selected_com]
 hist_com = yf.download(selected_ticker, period="6mo", progress=False)
-if not hist_com.empty and 'Close' in hist_com.columns:
-    fig_com = px.line(hist_com, x=hist_com.index, y="Close", title=f"{selected_com} 6个月走势（最新至 {hist_com.index[-1].strftime('%Y-%m-%d')})")
+if not hist_com.empty and 'Close' in hist_com.columns and len(hist_com) > 0:
+    latest_date = hist_com.index[-1].strftime('%Y-%m-%d')
+    fig_com = px.line(hist_com, x=hist_com.index, y="Close", title=f"{selected_com} 6个月走势（最新至 {latest_date})")
     st.plotly_chart(fig_com, use_container_width=True)
 else:
-    st.warning(f"{selected_com} 暂无历史数据")
+    st.warning(f"{selected_com} 暂无历史数据（休市或网络问题）")
 
 # ----------------- 2. 板块轮动 -----------------
 st.header("🔄 全球板块轮动热度（资源型重点监控，失败回退最近交易日）")
@@ -143,8 +148,8 @@ if not sector_df.empty:
     fig_bar = px.bar(sector_df, x="板块", y="周期涨跌%", color="相对大盘%", title="板块轮动排名")
     st.plotly_chart(fig_bar, use_container_width=True)
 
-# ----------------- 3. 中国资源股 -----------------
-st.header("🇨🇳 中国资源股监控（钨/稀土龙头，失败回退最近交易日）")
+# ----------------- 3. 中国资源股（扩展铜/铝/镁/煤炭） -----------------
+st.header("🇨🇳 中国资源股监控（钨/稀土/铜/铝/镁/煤炭龙头，失败回退最近交易日）")
 china_tickers = {
     "中钨高新": "000657.SZ",
     "厦门钨业": "600549.SH",
@@ -152,6 +157,10 @@ china_tickers = {
     "盛和资源": "600392.SH",
     "广晟有色": "600259.SH",
     "中国稀土": "000831.SZ",
+    "江西铜业": "600362.SH",    # 新增铜
+    "中国铝业": "601600.SH",    # 新增铝
+    "云海金属": "002182.SZ",    # 新增镁
+    "中国神华": "601088.SH",    # 新增煤炭
 }
 
 china_data = []
