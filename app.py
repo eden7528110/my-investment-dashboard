@@ -84,11 +84,9 @@ sector_tickers = {
 }
 
 sector_data = []
-load_success = False
 try:
     spy_hist = yf.download("SPY", period=period, progress=False)
     spy_perf = (spy_hist['Close'][-1] / spy_hist['Close'][0] - 1) * 100 if not spy_hist.empty and len(spy_hist) > 1 else 0
-    load_success = True
 
     for name, ticker in sector_tickers.items():
         hist = yf.download(ticker, period=period, progress=False)
@@ -103,26 +101,79 @@ except:
 
 if sector_data:
     sector_df = pd.DataFrame(sector_data)
-    sector_df["周期涨跌%"] = pd.to_numeric(sector_df["周期涨跌%"], errors='coerce').fillna(0)
-    sector_df["相对大盘%"] = pd.to_numeric(sector_df["相对大盘%"], errors='coerce').fillna(0)
-    sector_df = sector_df.sort_values("周期涨跌%", ascending=False)
 else:
     sector_df = pd.DataFrame(columns=["板块", "周期涨跌%", "相对大盘%"])
-    st.warning("板块数据暂无，跳过排序")
+    st.warning("板块数据暂无（加载失败）")
 
+sector_df["周期涨跌%"] = pd.to_numeric(sector_df.get("周期涨跌%", []), errors='coerce').fillna(0)
+sector_df["相对大盘%"] = pd.to_numeric(sector_df.get("相对大盘%", []), errors='coerce').fillna(0)
+sector_df = sector_df.sort_values("周期涨跌%", ascending=False)
 styled_sector = sector_df.style.map(highlight_change, subset=["周期涨跌%", "相对大盘%"])
 st.dataframe(styled_sector, use_container_width=True)
 
-# 轮动图
-if not sector_df.empty and len(sector_df) > 1:
+if not sector_df.empty and "周期涨跌%" in sector_df.columns:
     fig_bar = px.bar(sector_df, x="板块", y="周期涨跌%", color="相对大盘%", title="板块轮动排名（资源强则绿灯）")
     st.plotly_chart(fig_bar, use_container_width=True)
 else:
-    st.info("板块轮动图暂无数据（加载失败或数据不足）")
+    st.info("板块轮动图暂无数据")
 
 # ----------------- 3. 中国资源股 -----------------
-st.header("🇨🇳 Cc 中国资源股监控（钨/稀土龙头）")
+st.header("🇨🇳 中国资源股监控（钨/稀土龙头）")
+
+china_tickers = {
+    "中钨高新": "000657.SZ",
+    "厦门钨业": "600549.SH",
+    "北方稀土": "600111.SH",
+    "盛和资源": "600392.SH",
+    "广晟有色": "600259.SH",
+    "中国稀土": "000831.SZ",
+}
+
 china_data = []
 for name, code in china_tickers.items():
     try:
-        df = ak
+        df = ak.stock_zh_a_hist(symbol=code, adjust="qfq", timeout=10).tail(5)
+        if not df.empty and len(df) >= 2:
+            latest = df.iloc[-1]
+            prev = df.iloc[-2]
+            day_change = (latest['收盘'] / prev['收盘'] - 1) * 100
+            china_data.append({"股票": name, "最新价": round(latest['收盘'], 2), "日涨跌%": round(day_change, 2), "成交量(万)": round(latest['成交量']/10000, 1)})
+    except Exception as e:
+        pass  # 静默跳过单个股票失败
+
+china_df = pd.DataFrame(china_data)
+if not china_df.empty:
+    china_df["日涨跌%"] = pd.to_numeric(china_df["日涨跌%"], errors='coerce').fillna(0)
+    china_df = china_df.sort_values("日涨跌%", ascending=False)
+    styled_china = china_df.style.map(highlight_change, subset=["日涨跌%"])
+    st.dataframe(styled_china, use_container_width=True)
+else:
+    st.warning("今日A股资源股数据暂无（休市或网络问题）")
+
+# ----------------- 4. 智能警报 -----------------
+st.header("🚨 今日投资警报")
+alerts = []
+
+if not com_df.empty:
+    strong_com = com_df[com_df["涨跌幅%"] > 3]
+    if not strong_com.empty:
+        alerts.append(f"🔥 大宗异动：{', '.join(strong_com['商品'])}")
+
+if not sector_df.empty:
+    resource_sectors = sector_df[sector_df["板块"].str.contains("材料|能源")]
+    strong_resource = resource_sectors[(resource_sectors["周期涨跌%"] > 3) & (resource_sectors["相对大盘%"] > 0)]
+    if not strong_resource.empty:
+        alerts.append(f"🛢️ 资源周期强势：{', '.join(strong_resource['板块'])}")
+
+if not china_df.empty:
+    strong_china = china_df[china_df["日涨跌%"] > 5]
+    if not strong_china.empty:
+        alerts.append(f"🇨🇳 A股资源爆发：{', '.join(strong_china['股票'])}")
+
+if alerts:
+    for a in alerts:
+        st.success(a)
+else:
+    st.info("今日无明显异动，保持观察")
+
+st.caption(f"更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} | 如加载问题请刷新页面")
