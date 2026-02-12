@@ -57,9 +57,7 @@ for name, ticker in com_tickers.items():
                 latest = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else latest
                 price = latest['Close']
-                change = (  # 计算日涨跌幅
-                    (price / prev['Close'] - 1) * 100 if prev['Close'] != 0 else 0
-                )
+                change = (price / prev['Close'] - 1) * 100 if prev['Close'] != 0 else 0
                 data_date = hist.index[-1].strftime("%Y-%m-%d")
             else:
                 price = change = 0
@@ -74,12 +72,12 @@ styled_com = com_df.style.map(highlight_change, subset=["涨跌幅%"])
 st.dataframe(styled_com, use_container_width=True)
 st.caption(f"数据日期：{data_date}（实时失败时自动回退最近交易日）")
 
-# 商品走势图（空保护）
+# 商品走势图（修复索引错误）
 selected_com = st.selectbox("选择商品查看走势", list(com_tickers.keys()))
 selected_ticker = com_tickers[selected_com]
 hist_com = yf.download(selected_ticker, period="6mo", progress=False)
 if not hist_com.empty and 'Close' in hist_com.columns and len(hist_com) > 0:
-    latest_date = hist_com[-1].strftime('%Y-%m-%d')
+    latest_date = hist_com.index[-1].strftime('%Y-%m-%d')
     fig_com = px.line(hist_com, x=hist_com.index, y="Close", title=f"{selected_com} 6个月走势（最新至 {latest_date})")
     st.plotly_chart(fig_com, use_container_width=True)
 else:
