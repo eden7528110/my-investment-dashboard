@@ -15,39 +15,57 @@ def highlight_change(val):
     except: pass
     return ''
 
-st.set_page_config(layout="wide", page_title="硬核资源投资仪表盘")
-st.title("🛢️ 全球资源监控 & 实时库存分析系统")
+st.set_page_config(layout="wide", page_title="硬核资源仪表盘-V3")
+st.title("🛢️ 全球资源监控 & 穿透式库存看板")
 
-# ----------------- 2. 库存抓取引擎 -----------------
-@st.cache_data(ttl=3600) # 缓存1小时，避免频繁请求被封
+# ----------------- 2. 增强型库存抓取引擎 -----------------
+@st.cache_data(ttl=3600)
 def get_inventory_data():
-    """抓取 LME 和 SHFE 核心库存数据"""
-    stocks = {"LME": {}, "SHFE": {}}
+    """从多个源头抓取原始库存表格"""
+    stocks = {"LME": pd.DataFrame(), "SHFE": pd.DataFrame()}
     try:
         # 抓取全球库存 (LME)
-        lme_df = ak.futures_comm_stock_lme()
-        if not lme_df.empty:
-            # 匹配 铜、铝 等关键词
-            stocks["LME"] = lme_df.set_index('item')['stock'].to_dict()
+        stocks["LME"] = ak.futures_comm_stock_lme()
     except: pass
 
     try:
         # 抓取中国库存 (SHFE)
-        shfe_df = ak.futures_inventory_shfe()
-        if not shfe_df.empty:
-            stocks["SHFE"] = shfe_df.set_index('symbol')['inventory'].to_dict()
+        stocks["SHFE"] = ak.futures_inventory_shfe()
     except: pass
     return stocks
 
-# 获取库存快照
+def find_stock(keyword, stock_dict):
+    """模糊匹配逻辑：在库存表中寻找关键词"""
+    # 处理 LME
+    lme_val = "无数据"
+    if not stock_dict["LME"].empty:
+        # LME 原始表匹配
+        match = stock_dict["LME"][stock_dict["LME"]['item'].str.contains(keyword, na=False)]
+        if not match.empty:
+            lme_val = f"{match.iloc[0]['stock']} {match.iloc[0].get('unit', '吨')}"
+    
+    # 处理 SHFE
+    shfe_val = "无数据"
+    if not stock_dict["SHFE"].empty:
+        # SHFE 原始表匹配 (通常 symbol 字段是 'cu', 'al' 等)
+        # 映射表
+        mapping = {"铜": "cu", "铝": "al", "天然气": "ng", "白银": "ag", "黄金": "au"}
+        shfe_key = mapping.get(keyword, keyword)
+        match = stock_dict["SHFE"][stock_dict["SHFE"]['symbol'].str.contains(shfe_key, case=False, na=False)]
+        if not match.empty:
+            shfe_val = f"{match.iloc[0]['inventory']} 吨"
+            
+    return lme_val, shfe_val
+
+# 获取数据快照
 inventory_snapshot = get_inventory_data()
 
-# ----------------- 3. 核心配置清单 -----------------
+# ----------------- 3. 配置清单 -----------------
 com_tickers = {
-    "原油 (CL=F)": {"yf": "CL=F", "key": "原油"},
-    "黄金 (GC=F)": {"yf": "GC=F", "key": "黄金"},
     "期铜 (HG=F)": {"yf": "HG=F", "key": "铜"},
     "期铝 (ALI=F)": {"yf": "ALI=F", "key": "铝"},
+    "黄金 (GC=F)": {"yf": "GC=F", "key": "黄金"},
+    "原油 (CL=F)": {"yf": "CL=F", "key": "原油"},
     "白银 (SI=F)": {"yf": "SI=F", "key": "白银"},
     "天然气 (NG=F)": {"yf": "NG=F", "key": "天然气"},
     "稀土 ETF (REMX)": {"yf": "REMX", "key": "稀土"},
@@ -62,13 +80,13 @@ china_tickers = {
     "中国铝业(铝)": {"ak": "601600", "yf": "601600.SS"}
 }
 
-# ----------------- 4. 数据处理 -----------------
-com_data = []
+# ----------------- 4. 数据合并 -----------------
+com_results = []
 alerts = []
 
 for label, cfg in com_tickers.items():
+    lme_stock, shfe_stock = find_stock(cfg["key"], inventory_snapshot)
     try:
-        # 抓取行情
         t = yf.Ticker(cfg["yf"])
         hist = t.history(period="2d")
         if not hist.empty:
@@ -76,71 +94,60 @@ for label, cfg in com_tickers.items():
             price = hist['Close'].iloc[-1]
             change = ((price / hist['Close'].iloc[-2]) - 1) * 100 if len(hist)>1 else 0
             
-            # 匹配库存数据
-            lme_val = inventory_snapshot["LME"].get(cfg["key"], "无数据")
-            shfe_val = inventory_snapshot["SHFE"].get(cfg["key"], "无数据")
-
-            com_data.append({
+            com_results.append({
                 "项目": label, 
                 "最新价": round(price, 2), 
                 "涨跌幅%": round(change, 2),
-                "全球库存 (LME)": lme_val,
-                "中国库存 (SHFE)": shfe_val
+                "全球库存 (LME)": lme_stock,
+                "中国库存 (SHFE)": shfe_stock
             })
-            if change > 3: alerts.append(f"🔥 大宗异动：{label} 今日拉升 {round(change,2)}%！")
+            if change > 3: alerts.append(f"🔥 大宗暴涨：{label} 涨幅 {round(change,2)}%！")
     except:
-        com_data.append({"项目": label, "最新价": "N/A", "涨跌幅%": 0, "全球库存": "-", "中国库存": "-"})
+        com_results.append({"项目": label, "最新价": "N/A", "涨跌幅%": 0, "全球库存": lme_stock, "中国库存": shfe_stock})
 
 # ----------------- 5. 页面渲染 -----------------
 
 # 警报
-st.header("🚨 实时风险警报")
+st.header("🚨 策略警报中心")
 if alerts:
-    for a in alerts: st.warning(a)
-else: st.info("市场情绪平稳，暂无重大价格异动。")
+    for a in alerts: st.error(a)
+else: st.info("当前市场无异常价格爆发。")
 
-# 大宗商品看板
-st.header("🌍 全球大宗商品 & 实时库存看板")
-df_com = pd.DataFrame(com_data)
+# 全球看板
+st.header("🌍 全球大宗商品 & 实时仓单快照")
+df_com = pd.DataFrame(com_results)
 st.dataframe(df_com.style.map(highlight_change, subset=["涨跌幅%"]), use_container_width=True)
 
-# A股资源监控 (增加自动容错显示)
-st.header("🧱 资源龙头监控 (A股/备用多链路)")
+# A股资源 (针对截图1的修复)
+st.header("🧱 A股龙头监控 (多源冗余链路)")
 china_results = []
 for name, codes in china_tickers.items():
-    price, change, source = "N/A", 0, "None"
-    # 先尝试国际源 (yfinance)，通常对海外部署更友好
+    # 强制优先使用 yfinance 避免截图中的“抓取受限”
     try:
         yt = yf.Ticker(codes["yf"])
         yh = yt.history(period="2d")
         if not yh.empty:
             price = yh['Close'].iloc[-1]
             change = ((price / yh['Close'].iloc[-2]) - 1) * 100
-            source = "Yahoo(Global)"
+            source = "Yahoo(稳定)"
+        else: raise Exception()
     except:
-        # 失败则尝试国内源
         try:
             df = ak.stock_zh_a_hist(symbol=codes["ak"], period="daily").tail(2)
-            price = df.iloc[-1]['收盘']
-            change = (price / df.iloc[0]['收盘'] - 1) * 100
-            source = "Sina(China)"
-        except: pass
+            price, change, source = df.iloc[-1]['收盘'], (df.iloc[-1]['收盘']/df.iloc[0]['收盘']-1)*100, "Sina(国内)"
+        except: price, change, source = "N/A", 0, "失效"
     
-    china_results.append({"关联标的": name, "价格": price, "日涨跌%": round(change, 2), "来源": source})
+    china_results.append({"关联标的": name, "价格": price, "日涨跌%": round(change, 2), "链路": source})
 
-df_china = pd.DataFrame(china_results)
-st.dataframe(df_china.style.map(highlight_change, subset=["日涨跌%"]), use_container_width=True)
+st.dataframe(pd.DataFrame(china_results).style.map(highlight_change, subset=["日涨跌%"]), use_container_width=True)
 
-# 历史趋势对比
-st.header("📊 关键商品 6个月趋势分析")
-selected_label = st.selectbox("选择要查看的商品走势", options=list(com_tickers.keys()))
-target_ticker = com_tickers[selected_label]["yf"]
-
+# 图表
+st.header("📈 价格走势穿透")
+sel = st.selectbox("选择商品", options=list(com_tickers.keys()))
 try:
-    plot_data = yf.download(target_ticker, period="6mo", progress=False)
-    if isinstance(plot_data.columns, pd.MultiIndex): plot_data.columns = plot_data.columns.get_level_values(0)
-    st.plotly_chart(px.line(plot_data, x=plot_data.index, y="Close", title=f"{selected_label} 周期走势", template="plotly_dark"), use_container_width=True)
-except:
-    st.error("图表数据加载失败")
+    p_data = yf.download(com_tickers[sel]["yf"], period="6mo", progress=False)
+    if isinstance(p_data.columns, pd.MultiIndex): p_data.columns = p_data.columns.get_level_values(0)
+    st.plotly_chart(px.line(p_data, x=p_data.index, y="Close", title=f"{sel} 趋势图", template="plotly_dark"), use_container_width=True)
+except: st.error("趋势图调取失败")
 
-st.caption(f"系统运行中 | 最后同步: {datetime.now().strftime('%H:%M:%S')} | 库存数据每小时自动更新")
+st.caption(f"最后巡检时间: {datetime.now().strftime('%H:%M:%S')} | 库存数据已通过 fuzzy_match 引擎重连")
