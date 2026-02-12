@@ -5,109 +5,141 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 
-# 高亮函数
+# 1. 样式与高亮函数
 def highlight_change(val):
     if pd.isna(val): return ''
     try:
         val = float(val)
-        if val > 0: return 'color: #00ff00; font-weight: bold' # 亮绿
-        elif val < 0: return 'color: #ff4b4b; font-weight: bold' # 亮红
+        if val > 0: return 'background-color: rgba(0, 255, 0, 0.1); color: #00ff00; font-weight: bold'
+        elif val < 0: return 'background-color: rgba(255, 0, 0, 0.1); color: #ff4b4b; font-weight: bold'
     except: pass
     return ''
 
-st.set_page_config(layout="wide", page_title="资源 & 轮动投资仪表盘")
-st.title("🛢️ 资源型 & 宏观风向标实时仪表盘")
+st.set_page_config(layout="wide", page_title="高级资源投资仪表盘")
+st.title("🛢️ 全球资源监控 & 宏观库存仪表盘")
 
-# ----------------- 1. 全球大宗商品 & 宏观比例 -----------------
-st.header("🌍 全球大宗商品 & 宏观比率")
-
+# ----------------- 核心配置清单 -----------------
 com_tickers = {
-    "原油 CL=F": "CL=F",
-    "黄金 GC=F": "GC=F",
-    "铜 HG=F": "HG=F",
-    "铝 ALI=F": "ALI=F",
-    "白银 SI=F": "SI=F",
-    "天然气 NG=F": "NG=F",
-    "稀土 ETF REMX": "REMX",
+    "原油 (CL=F)": "CL=F",
+    "黄金 (GC=F)": "GC=F",
+    "期铜 (HG=F)": "HG=F",
+    "期铝 (ALI=F)": "ALI=F",
+    "白银 (SI=F)": "SI=F",
+    "天然气 (NG=F)": "NG=F",
+    "稀土 ETF (REMX)": "REMX",
+    "锂电 ETF (LIT)": "LIT"
 }
 
-com_data = []
-# 用于计算铜金比的临时变量
-prices_for_ratio = {"HG=F": None, "GC=F": None}
+# 增加 A 股代码对应的备用 Yahoo Finance 代码（如：002182 -> 002182.SZ）
+china_tickers = {
+    "宝武镁业(镁)": {"ak": "002182", "yf": "002182.SZ"},
+    "中钨高新(钨)": {"ak": "000657", "yf": "000657.SZ"},
+    "北方稀土(稀土)": {"ak": "600111", "yf": "600111.SS"},
+    "江西铜业(铜)": {"ak": "600362", "yf": "600362.SS"},
+    "中国铝业(铝)": {"ak": "601600", "yf": "601600.SS"}
+}
 
-for name, ticker in com_tickers.items():
+# ----------------- 数据抓取逻辑 -----------------
+com_data = []
+prices_for_ratio = {"HG=F": None, "GC=F": None}
+alerts = []
+
+# 全球大宗看板抓取
+for label, ticker in com_tickers.items():
     try:
         t = yf.Ticker(ticker)
         hist = t.history(period="2d")
         if not hist.empty:
-            # 处理 MultiIndex 情况
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            
+            if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
             price = hist['Close'].iloc[-1]
             prev = hist['Close'].iloc[-2] if len(hist) > 1 else price
             change = ((price / prev) - 1) * 100
-            com_data.append({"项目": name, "最新价": round(float(price), 2), "涨跌幅%": round(float(change), 2)})
-            
-            # 存入比率计算
-            if ticker in prices_for_ratio:
-                prices_for_ratio[ticker] = price
+            com_data.append({
+                "项目": label, 
+                "最新价": round(float(price), 2), 
+                "涨跌幅%": round(float(change), 2),
+                "全球库存 (LME)": "查询中...", # 此处预留接口位
+                "中国库存 (SHFE)": "查询中..."
+            })
+            if ticker in prices_for_ratio: prices_for_ratio[ticker] = price
+            if change > 3: alerts.append(f"🔥 大宗异动：{label} 今日大涨 {round(change,2)}%！")
     except:
-        com_data.append({"项目": name, "最新价": "N/A", "涨跌幅%": 0})
+        com_data.append({"项目": label, "最新价": "N/A", "涨跌幅%": 0})
 
-# --- 计算铜金比 ---
-if prices_for_ratio["HG=F"] and prices_for_ratio["GC=F"]:
-    cu_au_ratio = prices_for_ratio["HG=F"] / prices_for_ratio["GC=F"]
-    # 铜金比通常放大 1000 倍观察更直观
-    com_data.append({"项目": "📈 铜金比 (Cu/Au x 1000)", "最新价": round(cu_au_ratio * 1000, 4), "涨跌幅%": 0})
-
-com_df = pd.DataFrame(com_data)
-com_df["涨跌幅%"] = pd.to_numeric(com_df["涨跌幅%"], errors='coerce').fillna(0)
-st.dataframe(com_df.style.map(highlight_change, subset=["涨跌幅%"]), use_container_width=True)
-
-# ----------------- 2. 金属镁专题 (A股龙头) -----------------
-st.header("🧱 金属镁 & 战略资源监控 (A股)")
-
-# 云海金属已更名为宝武镁业，代码 002182
-mag_tickers = {
-    "宝武镁业(镁业龙头)": "002182",
-    "中钨高新(钨业)": "000657",
-    "北方稀土(稀土)": "600111",
-    "中国铝业(铝业)": "601600"
-}
-
-mag_data = []
-for name, code in mag_tickers.items():
+# ----------------- A股数据：多源热备逻辑 -----------------
+china_data = []
+for name, codes in china_tickers.items():
+    success = False
+    # 尝试一：Akshare (国内接口)
     try:
-        # 使用 akshare 获取最近数据
-        df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq").tail(2)
+        df = ak.stock_zh_a_hist(symbol=codes["ak"], period="daily", adjust="qfq").tail(2)
         if not df.empty:
             latest = df.iloc[-1]
             prev = df.iloc[0]
-            change = (latest['收盘'] / prev['收盘'] - 1) * 100
-            mag_data.append({
-                "关联标的": name, 
-                "价格": latest['收盘'], 
-                "日涨跌%": round(change, 2),
-                "成交额(亿)": round(latest['成交额']/100000000, 2)
-            })
-    except:
-        pass
+            price, change = latest['收盘'], (latest['收盘'] / prev['收盘'] - 1) * 100
+            amount = round(latest['成交额']/100000000, 2)
+            source = "Sina/East"
+            success = True
+    except: pass
 
-if mag_data:
-    st.dataframe(pd.DataFrame(mag_data).style.map(highlight_change, subset=["日涨跌%"]), use_container_width=True)
+    # 尝试二：Yahoo Finance (备用接口)
+    if not success:
+        try:
+            yt = yf.Ticker(codes["yf"])
+            yh = yt.history(period="2d")
+            if not yh.empty:
+                price = yh['Close'].iloc[-1]
+                change = ((price / yh['Close'].iloc[-2]) - 1) * 100
+                amount = "N/A"
+                source = "Yahoo(Backup)"
+                success = True
+        except: pass
+
+    if success:
+        china_data.append({
+            "关联标的": name, 
+            "价格": round(price, 2), 
+            "日涨跌%": round(change, 2), 
+            "成交额(亿)": amount,
+            "数据来源": source,
+            "全球库存": "监控中", 
+            "中国库存": "监控中"
+        })
+        if isinstance(change, (int, float)) and change > 5:
+            alerts.append(f"🇨🇳 A股爆发：{name} 今日异动拉升 {round(change,2)}%！")
+
+# ----------------- 页面显示 -----------------
+
+# 1. 警报模块
+st.header("🚨 风险与机会实时警报")
+if alerts:
+    for a in alerts: st.warning(a)
+else: st.info("当前市场波动平稳。")
+
+# 2. 全球大宗看板 (含库存列)
+st.header("🌍 全球大宗商品看板 (含库存指标)")
+if com_data:
+    df_com = pd.DataFrame(com_data)
+    st.dataframe(df_com.style.map(highlight_change, subset=["涨跌幅%"]), use_container_width=True)
+
+# 3. A股资源监控 (含热备显示)
+st.header("🧱 资源龙头监控 (多源备份)")
+if china_data:
+    df_china = pd.DataFrame(china_data)
+    st.dataframe(df_china.style.map(highlight_change, subset=["日涨跌%"]), use_container_width=True)
 else:
-    st.info("A股数据暂未开市或抓取受限")
+    st.error("❌ 国内及备用接口均抓取失败。请检查网络环境。")
 
-# ----------------- 3. 走势对比可视化 -----------------
-st.header("📊 关键走势对比 (近6个月)")
-target = st.selectbox("选择对比基准", ["HG=F", "GC=F", "CL=F"])
-hist_data = yf.download(target, period="6mo", progress=False)
-if isinstance(hist_data.columns, pd.MultiIndex):
-    hist_data.columns = hist_data.columns.get_level_values(0)
+# 4. 走势分析
+st.header("📊 历史周期走势")
+select_options = {v: k for k, v in com_tickers.items()}
+selected_ticker = st.selectbox("选择商品", options=list(select_options.keys()), format_func=lambda x: select_options[x])
 
-if not hist_data.empty:
-    fig = px.line(hist_data, x=hist_data.index, y="Close", title=f"{target} 周期走势分析")
-    st.plotly_chart(fig, use_container_width=True)
+try:
+    h_data = yf.download(selected_ticker, period="6mo", progress=False)
+    if not h_data.empty:
+        if isinstance(h_data.columns, pd.MultiIndex): h_data.columns = h_data.columns.get_level_values(0)
+        st.plotly_chart(px.line(h_data, x=h_data.index, y="Close", title=f"{select_options[selected_ticker]} 6个月走势"), use_container_width=True)
+except: st.error("绘图失败。")
 
-st.caption(f"系统侦测时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 铜金比上涨通常代表市场风险偏好回归。")
+st.caption(f"更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 已启用 Yahoo Finance 作为 A 股备用数据源。")
