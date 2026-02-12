@@ -6,6 +6,20 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
+# 高亮函数：正涨绿色加粗，负涨红色加粗
+def highlight_change(val):
+    if pd.isna(val):
+        return ''
+    try:
+        val = float(val)
+        if val > 0:
+            return 'color: green; font-weight: bold'
+        elif val < 0:
+            return 'color: red; font-weight: bold'
+    except:
+        pass
+    return ''
+
 st.set_page_config(layout="wide", page_title="资源 & 轮动投资仪表盘")
 st.title("🛢️ 资源型 & 板块轮动实时仪表盘（全球 + A股）")
 
@@ -27,13 +41,17 @@ com_tickers = {
 
 com_data = []
 for name, ticker in com_tickers.items():
-    info = yf.Ticker(ticker).info
-    price = info.get('regularMarketPrice') or info.get('previousClose') or 0
-    change = info.get('regularMarketChangePercent') or 0
-    com_data.append({"商品": name, "最新价": round(price, 2), "涨跌幅%": round(change, 2)})
+    try:
+        info = yf.Ticker(ticker).info
+        price = info.get('regularMarketPrice') or info.get('previousClose') or 0
+        change = info.get('regularMarketChangePercent') or 0
+        com_data.append({"商品": name, "最新价": round(price, 2), "涨跌幅%": round(change, 2)})
+    except:
+        com_data.append({"商品": name, "最新价": 0, "涨跌幅%": 0})
 
 com_df = pd.DataFrame(com_data).sort_values("涨跌幅%", ascending=False)
-st.dataframe(com_df.style.background_gradient(cmap='RdYlGn', subset=["涨跌幅%"]), use_container_width=True)
+styled_com = com_df.style.map(highlight_change, subset=["涨跌幅%"])
+st.dataframe(styled_com, use_container_width=True)
 
 # 商品走势图
 selected_com = st.selectbox("选择商品查看走势", list(com_tickers.keys()))
@@ -71,7 +89,8 @@ for name, ticker in sector_tickers.items():
     sector_data.append({"板块": name, "周期涨跌%": round(perf, 2), "相对大盘%": round(relative, 2)})
 
 sector_df = pd.DataFrame(sector_data).sort_values("周期涨跌%", ascending=False)
-st.dataframe(sector_df.style.background_gradient(cmap='RdYlGn', subset=["周期涨跌%", "相对大盘%"]), use_container_width=True)
+styled_sector = sector_df.style.map(highlight_change, subset=["周期涨跌%", "相对大盘%"])
+st.dataframe(styled_sector, use_container_width=True)
 
 # 轮动柱状图
 fig_bar = px.bar(sector_df, x="板块", y="周期涨跌%", color="相对大盘%", title="板块轮动排名（资源强则绿灯）")
@@ -103,7 +122,10 @@ for name, code in china_tickers.items():
 china_df = pd.DataFrame(china_data)
 if not china_df.empty:
     china_df = china_df.sort_values("日涨跌%", ascending=False)
-    st.dataframe(china_df.style.background_gradient(cmap='RdYlGn', subset=["日涨跌%"]), use_container_width=True)
+    styled_china = china_df.style.map(highlight_change, subset=["日涨跌%"])
+    st.dataframe(styled_china, use_container_width=True)
+else:
+    st.warning("今日A股资源股数据暂无（可能网络或假期原因）")
 
 # ----------------- 4. 智能警报 -----------------
 st.header("🚨 今日投资警报（你的80%预判触发器）")
