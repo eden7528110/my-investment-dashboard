@@ -3,6 +3,8 @@ import yfinance as yf
 import akshare as ak
 import pandas as pd
 import plotly.express as px
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 # ----------------- 1. 样式与高亮 -----------------
@@ -15,113 +17,129 @@ def highlight_change(val):
     except: pass
     return ''
 
-st.set_page_config(layout="wide", page_title="硬核资源仪表盘-全功能版")
-st.title("🛢️ 全球资源监控 & 宏观走势穿透系统")
+st.set_page_config(layout="wide", page_title="资源监控终极版")
+st.title("🛢️ 全球资源监控 & 宏观走势系统 (SMM源+回溯)")
 
-# ----------------- 2. 智能库存回溯引擎 -----------------
+# ----------------- 2. SMM 爬虫 + 智能回溯引擎 -----------------
 @st.cache_data(ttl=3600)
-def get_recent_inventory():
+def get_combined_inventory():
     inventory_map = {}
-    # LME 回溯
-    try:
-        df_lme = ak.futures_inventory_99(exchange="lme") 
-        if not df_lme.empty:
-            for _, row in df_lme.iterrows():
-                key_name = row['名称'].replace("LME", "").strip()
-                inventory_map[f"LME_{key_name}"] = f"{row['库存量']}"
-    except: pass
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    # 策略 A: 尝试爬取 SMM (metal.com)
+    urls = {
+        "LME": "https://www.metal.com/LME/Inventory",
+        "SHFE": "https://www.metal.com/SHFE/Inventory"
+    }
+    for prefix, url in urls.items():
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            table = soup.find('table') # 抓取页面第一个表格
+            if table:
+                rows = table.find_all('tr')
+                for row in rows[1:]:
+                    cols = row.find_all(['td', 'th'])
+                    if len(cols) >= 2:
+                        name = cols[0].text.strip().replace('LME ', '').split('(')[0].strip()
+                        val = cols[1].text.strip()
+                        inventory_map[f"{prefix}_{name}"] = f"{val} (SMM)"
+        except: pass
 
-    # SHFE 回溯 (查询最近 7 天)
+    # 策略 B: 回退至 AkShare 日期回溯逻辑 (如果SMM部分缺失)
+    metal_keys = ["铜", "铝", "锌", "铅", "镍", "锡"]
     for i in range(7):
+        if all(f"SHFE_{m}" in inventory_map for m in metal_keys): break
         check_date = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
-        display_date = (datetime.now() - timedelta(days=i)).strftime("%m-%d")
         try:
             df_shfe = ak.futures_inventory_shfe(date=check_date)
             if not df_shfe.empty:
                 for _, row in df_shfe.iterrows():
-                    inventory_map[f"SHFE_{row['品种'].strip()}"] = f"{row['合计']} ({display_date})"
+                    m_name = row['品种'].strip()
+                    if f"SHFE_{m_name}" not in inventory_map:
+                        inventory_map[f"SHFE_{m_name}"] = f"{row['合计']} ({check_date[4:6]}-{check_date[6:8]})"
                 break
         except: continue
     return inventory_map
 
-def find_stock_value(keyword, inv_data):
-    name_map = {"铜": "铜", "HG=F": "铜", "铝": "铝", "ALI=F": "铝", "黄金": "黄金", "GC=F": "黄金", "白银": "白银", "SI=F": "白银"}
-    target_cn = name_map.get(keyword, keyword)
-    lme = inv_data.get(f"LME_{target_cn}", "---")
-    shfe = inv_data.get(f"SHFE_{target_cn}", "---")
+def find_stock_val(keyword, inv_data):
+    # 建立多语言映射
+    mapping = {"铜": ["Copper", "铜", "HG=F"], "铝": ["Aluminum", "铝", "ALI=F"], "黄金": ["Gold", "黄金"], "白银": ["Silver", "白银"]}
+    target = keyword
+    for k, v in mapping.items():
+        if keyword in v: target = k; break
+    
+    lme = "---"
+    for k, v in inv_data.items():
+        if k.startswith("LME_") and target in k: lme = v; break
+    shfe = "---"
+    for k, v in inv_data.items():
+        if k.startswith("SHFE_") and target in k: shfe = v; break
     return lme, shfe
 
-with st.spinner('正在同步全球库存与宏观数据...'):
-    inventory_snapshot = get_recent_inventory()
+with st.spinner('正在同步全球库存(SMM)与价格数据...'):
+    inventory_snapshot = get_combined_inventory()
 
-# ----------------- 3. 配置清单 -----------------
+# ----------------- 3. 配置 -----------------
 com_tickers = {
     "期铜 (HG=F)": {"yf": "HG=F", "key": "铜"},
     "期铝 (ALI=F)": {"yf": "ALI=F", "key": "铝"},
     "黄金 (GC=F)": {"yf": "GC=F", "key": "黄金"},
     "白银 (SI=F)": {"yf": "SI=F", "key": "白银"},
-    "原油 (CL=F)": {"yf": "CL=F", "key": "原油"},
-    "天然气 (NG=F)": {"yf": "NG=F", "key": "天然气"}
+    "原油 (CL=F)": {"yf": "CL=F", "key": "原油"}
 }
 
-# ----------------- 4. 数据合并与比率计算 -----------------
+# ----------------- 4. 数据合并 -----------------
 com_results = []
 prices_for_ratio = {"HG=F": None, "GC=F": None}
 
 for label, cfg in com_tickers.items():
-    lme_stock, shfe_stock = find_stock_value(cfg["key"], inventory_snapshot)
+    lme, shfe = find_stock_val(cfg["key"], inventory_snapshot)
     try:
         t = yf.Ticker(cfg["yf"])
         price = t.fast_info.last_price
-        prev = t.fast_info.previous_close
-        if price:
-            change = ((price / prev) - 1) * 100
-            com_results.append({"项目": label, "最新价": round(price, 2), "涨跌幅%": round(change, 2), "全球库存 (LME)": lme_stock, "中国库存 (SHFE)": shfe_stock, "ticker": cfg["yf"]})
-            if cfg["yf"] in prices_for_ratio: prices_for_ratio[cfg["yf"]] = price
+        change = ((price / t.fast_info.previous_close) - 1) * 100
+        com_results.append({"项目": label, "最新价": round(price, 2), "涨跌幅%": round(change, 2), "全球库存 (LME)": lme, "中国库存 (SHFE)": shfe, "ticker": cfg["yf"]})
+        if cfg["yf"] in prices_for_ratio: prices_for_ratio[cfg["yf"]] = price
     except: pass
 
-# 添加铜金比到表格
 if prices_for_ratio["HG=F"] and prices_for_ratio["GC=F"]:
-    ratio_val = (prices_for_ratio["HG=F"] / prices_for_ratio["GC=F"]) * 1000
-    com_results.append({"项目": "📈 铜金比 (Cu/Au x 1000)", "最新价": round(ratio_val, 4), "涨跌幅%": "宏观指标", "全球库存 (LME)": "---", "中国库存 (SHFE)": "---", "ticker": "RATIO"})
+    rv = (prices_for_ratio["HG=F"] / prices_for_ratio["GC=F"]) * 1000
+    com_results.append({"项目": "📈 铜金比 (Cu/Au x 1000)", "最新价": round(rv, 4), "涨跌幅%": "宏观指标", "全球库存 (LME)": "---", "中国库存 (SHFE)": "---", "ticker": "RATIO"})
 
-# ----------------- 5. 页面渲染 -----------------
+# ----------------- 5. 页面展示 -----------------
 st.header("🌍 全球大宗商品看板")
 df_com = pd.DataFrame(com_results)
 st.dataframe(df_com.drop(columns=['ticker']).style.map(highlight_change, subset=["涨跌幅%"]), use_container_width=True)
 
-# ----------------- 6. 趋势穿透 (核心修复：支持铜金比绘图) -----------------
+# ----------------- 6. 趋势分析 (修复 KeyError: 'Close_cu') -----------------
 st.header("📊 历史趋势分析")
-plot_options = {cfg["yf"]: label for label, cfg in com_tickers.items()}
-plot_options["RATIO"] = "📈 铜金比 (Copper/Gold Ratio)"
-
-selected_plot = st.selectbox("选择要查看趋势的标的", options=list(plot_options.keys()), format_func=lambda x: plot_options[x])
+opts = {cfg["yf"]: label for label, cfg in com_tickers.items()}
+opts["RATIO"] = "📈 铜金比 (Copper/Gold Ratio)"
+sel = st.selectbox("选择要查看趋势的标的", options=list(opts.keys()), format_func=lambda x: opts[x])
 
 try:
-    if selected_plot == "RATIO":
-        # 下载两份数据进行计算
-        data_cu = yf.download("HG=F", period="6mo", progress=False)['Close']
-        data_au = yf.download("GC=F", period="6mo", progress=False)['Close']
+    if sel == "RATIO":
+        # 获取6个月数据
+        d_cu = yf.download("HG=F", period="6mo", progress=False)[['Close']]
+        d_au = yf.download("GC=F", period="6mo", progress=False)[['Close']]
         
-        # 处理 MultiIndex 
-        if isinstance(data_cu, pd.DataFrame): data_cu = data_cu.iloc[:, 0]
-        if isinstance(data_au, pd.DataFrame): data_au = data_au.iloc[:, 0]
+        # 关键修复：处理 MultiIndex
+        d_cu.columns = ['Close_cu']
+        d_au.columns = ['Close_au']
         
-        # 合并并计算比率
-        ratio_df = pd.merge(data_cu, data_au, left_index=True, right_index=True, suffixes=('_cu', '_au'))
-        ratio_df['ratio'] = (ratio_df['Close_cu'] / ratio_df['Close_au']) * 1000
+        # 合并
+        r_df = pd.merge(d_cu, d_au, left_index=True, right_index=True)
+        r_df['ratio'] = (r_df['Close_cu'] / r_df['Close_au']) * 1000
         
-        fig = px.line(ratio_df, x=ratio_df.index, y="ratio", title="铜金比 (Cu/Au x 1000) 6个月宏观趋势", template="plotly_dark")
-        fig.update_yaxes(title="比值 (数值越高代表经济预期越强)")
+        fig = px.line(r_df, x=r_df.index, y="ratio", title="铜金比 6个月趋势 (宏观经济风向标)", template="plotly_dark")
     else:
-        # 普通商品绘图
-        h_data = yf.download(selected_plot, period="6mo", progress=False)['Close']
-        if isinstance(h_data, pd.DataFrame): h_data = h_data.iloc[:, 0]
-        fig = px.line(h_data, x=h_data.index, y=h_data.values, title=f"{plot_options[selected_plot]} 趋势图", template="plotly_dark")
-        fig.update_yaxes(title="价格")
-
+        h_data = yf.download(sel, period="6mo", progress=False)[['Close']]
+        h_data.columns = ['Price']
+        fig = px.line(h_data, x=h_data.index, y="Price", title=f"{opts[sel]} 趋势", template="plotly_dark")
+    
     st.plotly_chart(fig, use_container_width=True)
 except Exception as e:
-    st.error(f"图表生成失败: {e}")
+    st.error(f"图表生成失败: {str(e)}")
 
-st.caption(f"数据实时更新 | 最后同步: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"最后同步: {datetime.now().strftime('%H:%M:%S')} | 已修复铜金比数据对齐逻辑")
