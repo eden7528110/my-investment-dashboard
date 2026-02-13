@@ -7,148 +7,151 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
-# ----------------- 1. 配置与初始化 -----------------
-st.set_page_config(layout="wide", page_title="硬核资产监控-投资决策版")
-st.title("🛡️ 全球大宗 & A/H 核心标的全维度监控")
+# ----------------- 1. 配置与页面设置 -----------------
+st.set_page_config(layout="wide", page_title="硬核投资决策仪表盘")
+st.title("🛡️ 核心资产全维度看板 (含资金流/分红/估值)")
 
-# 辅助高亮函数
-def highlight_val(val):
+def highlight_flow(val):
     if not isinstance(val, (int, float)): return ''
-    if val > 0: return 'color: #00ff00; font-weight: bold'
-    elif val < 0: return 'color: #ff4b4b; font-weight: bold'
-    return ''
+    return 'color: #00ff00' if val > 0 else 'color: #ff4b4b' if val < 0 else ''
 
-# ----------------- 2. 增强型数据引擎 -----------------
+# ----------------- 2. 增强型数据抓取引擎 -----------------
 
 @st.cache_data(ttl=3600)
-def get_smm_inventory():
-    """SMM 爬虫逻辑"""
-    inv = {}
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    urls = {"LME": "https://www.metal.com/LME/Inventory", "SHFE": "https://www.metal.com/SHFE/Inventory"}
-    for k, url in urls.items():
+def get_inventory_all():
+    """回溯 10 天查找最新库存"""
+    res = {}
+    for i in range(10):
+        d = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
         try:
-            r = requests.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            table = soup.find('table')
-            if table:
-                for row in table.find_all('tr')[1:]:
-                    tds = row.find_all(['td', 'th'])
-                    if len(tds) >= 2:
-                        name = tds[0].text.strip().replace('LME ', '').split('(')[0].strip()
-                        inv[f"{k}_{name}"] = tds[1].text.strip()
-        except: pass
-    return inv
+            df = ak.futures_inventory_shfe(date=d)
+            if not df.empty:
+                for _, row in df.iterrows():
+                    res[f"SHFE_{row['品种'].strip()}"] = f"{row['合计']} ({d[4:6]}-{d[6:8]})"
+                break
+        except: continue
+    return res
 
-@st.cache_data(ttl=1800)
-def get_china_market_data():
-    """批量获取A股实时行情与基本面指标"""
+@st.cache_data(ttl=1200)
+def get_full_market_data():
+    """多源获取 A 股数据"""
     try:
-        # 获取实时行情（含PE, PB）
+        # 实时行情 + PE/PB
         df_spot = ak.stock_zh_a_spot_em()
-        # 获取主力资金流向排名
+        # 主力资金流 (含 5日, 20日)
         df_flow = ak.stock_individual_fund_flow_rank_em()
         return df_spot, df_flow
     except:
         return pd.DataFrame(), pd.DataFrame()
 
-# ----------------- 3. 标的清单 -----------------
-china_tickers = {
-    "中钨高新": "000657", "宝武镁业": "002182", "中国铝业": "601600", "洛阳钼业": "603993",
-    "紫金矿业": "601899", "北方稀土": "600111", "江西铜业": "600362", "中国神华": "601088",
-    "宁德时代": "300750", "牧原股份": "002714", "温氏股份": "300498", "拓普集团": "601689",
-    "旭升集团": "603305", "绿的谐波": "688017", "捷捷微电": "300623", "粤桂股份": "000833",
-    "建设银行": "601939", "工商银行": "601398", "中国平安": "601318", "贝泰妮": "300957",
-    "宝泰隆": "601011", "上大股份": "301522", "双欣环保": "N/A", "小米股份": "1810.HK",
-    "泡泡玛特": "9992.HK", "影石创新": "Private"
+# ----------------- 3. 标的资产清单 -----------------
+# 定义需要监控的股票清单
+stock_list = {
+    "中钨高新": "000657.SZ", "宝武镁业": "002182.SZ", "中国铝业": "601600.SS", 
+    "洛阳钼业": "603993.SS", "紫金矿业": "601899.SS", "北方稀土": "600111.SS",
+    "江西铜业": "600362.SS", "中国神华": "601088.SS", "宁德时代": "300750.SZ",
+    "牧原股份": "002714.SZ", "温氏股份": "300498.SZ", "拓普集团": "601689.SS",
+    "旭升集团": "603305.SS", "绿的谐波": "688017.SS", "捷捷微电": "300623.SZ",
+    "粤桂股份": "000833.SZ", "建设银行": "601939.SS", "工商银行": "601398.SS",
+    "中国平安": "601318.SS", "贝泰妮": "300957.SZ", "宝泰隆": "601011.SS",
+    "上大股份": "301522.SZ", "小米股份": "1810.HK", "泡泡玛特": "9992.HK"
 }
 
-# ----------------- 4. 数据处理逻辑 -----------------
-with st.spinner('正在构建全维度投资矩阵...'):
-    inv_snapshot = get_smm_inventory()
-    df_spot, df_flow = get_china_market_data()
+# ----------------- 4. 数据核心计算 -----------------
+with st.spinner('正在同步数据矩阵，请稍候...'):
+    inv_data = get_inventory_all()
+    df_spot, df_flow = get_full_market_data()
 
-# 处理 A 股/港股指标表
-final_rows = []
-for name, code in china_tickers.items():
-    row = {"名称": name, "价格": "N/A", "涨跌%": 0.0, "PE": "-", "PB": "-", "股息率%": "-", "主力当日(万)": "-", "主力5日(万)": "-", "筹码集中度": "-"}
+# 整合列表
+china_results = []
+for name, yf_code in stock_list.items():
+    pure_code = yf_code.split('.')[0]
+    # 默认值
+    item = {
+        "名称": name, "最新价": "N/A", "涨跌%": 0.0, "PE(动)": "-", "PB": "-",
+        "主力当日(万)": 0, "主力5日(万)": 0, "主力20日(万)": 0, "股息率%": "-"
+    }
     
-    # A股处理
-    if code != "N/A" and "HK" not in code and code != "Private":
-        match = df_spot[df_spot['代码'] == code]
+    # 尝试从 akshare 获取 (国内源快)
+    if not df_spot.empty and '代码' in df_spot.columns:
+        match = df_spot[df_spot['代码'] == pure_code]
         if not match.empty:
             m = match.iloc[0]
-            row.update({
-                "价格": m['最新价'], "涨跌%": m['涨跌幅'],
-                "PE": m['市盈率-动态'], "PB": m['市净率']
+            item.update({
+                "最新价": m['最新价'], "涨跌%": m['涨跌幅'],
+                "PE(动)": m['市盈率-动态'], "PB": m['市净率']
             })
-            # 资金流
-            f_match = df_flow[df_flow['代码'] == code]
-            if not f_match.empty:
-                row.update({
-                    "主力当日(万)": round(f_match.iloc[0]['今日主力净流入-净额']/10000, 1),
-                    "主力5日(万)": round(f_match.iloc[0]['5日主力净流入-净额']/10000, 1)
-                })
-    # 港股处理 (小米/泡泡)
-    elif "HK" in code:
+    
+    # 尝试补充主力资金
+    if not df_flow.empty and '代码' in df_flow.columns:
+        f_match = df_flow[df_flow['代码'] == pure_code]
+        if not f_match.empty:
+            fm = f_match.iloc[0]
+            item.update({
+                "主力当日(万)": round(fm['今日主力净流入-净额']/10000, 0),
+                "主力5日(万)": round(fm['5日主力净流入-净额']/10000, 0),
+                "主力20日(万)": round(fm['20日主力净流入-净额']/10000, 0)
+            })
+            
+    # 针对港股或失效标的，通过 yfinance 兜底获取基本面
+    if item["最新价"] == "N/A" or "HK" in yf_code:
         try:
-            tk = yf.Ticker(code)
+            tk = yf.Ticker(yf_code)
             inf = tk.info
-            row.update({
-                "价格": inf.get('currentPrice', 'N/A'),
-                "涨跌%": round(((inf.get('currentPrice',0)/inf.get('previousClose',1))-1)*100, 2),
-                "PE": inf.get('trailingPE', '-'),
-                "PB": inf.get('priceToBook', '-'),
-                "股息率%": round(inf.get('dividendYield', 0)*100, 2)
+            item.update({
+                "最新价": inf.get('currentPrice', item["最新价"]),
+                "PE(动)": inf.get('trailingPE', "-"),
+                "PB": inf.get('priceToBook', "-"),
+                "股息率%": round(inf.get('dividendYield', 0)*100, 2) if inf.get('dividendYield') else "-"
             })
         except: pass
-    
-    final_rows.append(row)
 
-# ----------------- 5. 页面展示 -----------------
+    china_results.append(item)
 
-# 全球大宗略（保留之前功能）
-st.header("🌍 全球资源监控 (LME/SHFE)")
-# ... 此处省略 com_tickers 展示部分 ...
+# ----------------- 5. 页面渲染 -----------------
 
-# 核心资产监控（增强版）
-st.header("🧱 核心资产深度看板 (Valuation & Capital Flow)")
-df_display = pd.DataFrame(final_rows)
+st.header("📊 核心资产全维度监控")
+st.markdown("> **注**：影石创新、双欣环保暂未上市；主力资金数据单位为万元；库存非当日则显示具体日期。")
+
+# A/H 股大数据表
+df_final = pd.DataFrame(china_results)
 st.dataframe(
-    df_display.style.map(highlight_val, subset=['涨跌%', '主力当日(万)', '主力5日(万)']),
-    use_container_width=True,
-    height=600
+    df_final.style.map(highlight_flow, subset=["涨跌%", "主力当日(万)", "主力5日(万)", "主力20日(万)"]),
+    use_container_width=True, height=500
 )
 
-# ----------------- 6. 趋势穿透 (修复版铜金比) -----------------
-st.header("📈 宏观/个股趋势分析")
-sel = st.selectbox("选择分析对象", options=["铜金比", "期铜 (HG=F)", "黄金 (GC=F)"] + list(china_tickers.keys()))
+# 库存状态
+with st.expander("📦 交易所库存快照 (T-10 自动回溯)"):
+    cols = st.columns(4)
+    metals = ["铜", "铝", "锌", "铅"]
+    for idx, m in enumerate(metals):
+        cols[idx].metric(f"SHFE {m} 库存", inv_data.get(f"SHFE_{m}", "无数据"))
+
+# ----------------- 6. 趋势图修复 (铜金比专用) -----------------
+st.header("📈 价格走势穿透")
+sel = st.selectbox("选择分析标的", options=["铜金比 (Copper/Gold Ratio)"] + list(stock_list.keys()))
 
 try:
-    if sel == "铜金比":
-        cu = yf.download("HG=F", period="6mo", progress=False)
-        au = yf.download("GC=F", period="6mo", progress=False)
+    if "铜金比" in sel:
+        cu = yf.download("HG=F", period="1y", progress=False)
+        au = yf.download("GC=F", period="1y", progress=False)
         
-        # 稳健提取 Close
-        if isinstance(cu.columns, pd.MultiIndex):
-            cu_close = cu['Close'].iloc[:, 0]
-            au_close = au['Close'].iloc[:, 0]
-        else:
-            cu_close, au_close = cu['Close'], au['Close']
-            
-        ratio = (cu_close / au_close) * 1000
-        fig = px.line(x=ratio.index, y=ratio.values, title="铜金比 (Cu/Au x 1000) 趋势")
+        # 彻底解决 MultiIndex 导致的 Close_cu 缺失问题
+        c_p = cu['Close'].values.flatten()
+        a_p = au['Close'].values.flatten()
+        ratio = (c_p / a_p) * 1000
+        
+        fig = px.line(x=cu.index, y=ratio, title="宏观经济心跳：铜金比 (6个月趋势)", template="plotly_dark")
+        fig.update_yaxes(title="Cu/Au Ratio")
     else:
-        target_code = china_tickers.get(sel, sel)
-        if "HK" not in target_code and len(target_code) == 6:
-            target_code = target_code + (".SS" if target_code.startswith("6") else ".SZ")
-        
-        data = yf.download(target_code, period="1y", progress=False)
-        y_val = data['Close'].iloc[:, 0] if isinstance(data.columns, pd.MultiIndex) else data['Close']
-        fig = px.line(x=data.index, y=y_val, title=f"{sel} 一年价格趋势")
-    
+        code = stock_list[sel]
+        hist = yf.download(code, period="1y", progress=False)
+        # 兼容多级索引
+        p_vals = hist['Close'].values.flatten()
+        fig = px.line(x=hist.index, y=p_vals, title=f"{sel} 历史价格 (1年)", template="plotly_dark")
+
     st.plotly_chart(fig, use_container_width=True)
 except Exception as e:
-    st.warning(f"由于标的未上市或数据源问题，暂无法展示趋势图。")
+    st.warning(f"由于网络或标的状态(未上市)，图表无法生成。详情: {e}")
 
-st.caption(f"注：筹码集中度及主力流向为 T-1 数据；影石创新暂未上市。同步时间: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"最后刷新: {datetime.now().strftime('%H:%M:%S')} | 链路状态: 已修复 KeyError 并集成资金流。")
