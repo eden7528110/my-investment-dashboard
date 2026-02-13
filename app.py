@@ -7,27 +7,23 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
-# ----------------- 1. 初始化设置 -----------------
-st.set_page_config(layout="wide", page_title="硬核全维度资源看板-10年修复版")
-st.title("🛡️ 全球资源监控 & 投资全维度看板 (10年长周期)")
+# ----------------- 1. 初始化 -----------------
+st.set_page_config(layout="wide", page_title="硬核全维度资源监控")
+st.title("🛡️ 全球资源监控 & 核心资产看板 (修复版)")
 
-# 颜色辅助函数
 def highlight_flow(val):
     if not isinstance(val, (int, float)): return ''
     return 'color: #00ff00' if val > 0 else 'color: #ff4b4b' if val < 0 else ''
 
-def highlight_concentration(val):
-    if not isinstance(val, (int, float)): return ''
-    return 'background-color: rgba(0, 255, 0, 0.1); color: #00ff00' if val < 0 else 'color: #ff4b4b'
-
-# ----------------- 2. 标的清单 (确保大宗商品在内) -----------------
+# ----------------- 2. 标的配置 -----------------
 com_tickers = {
     "期铜 (HG=F)": "HG=F",
     "黄金 (GC=F)": "GC=F",
     "期铝 (ALI=F)": "ALI=F",
     "白银 (SI=F)": "SI=F",
     "原油 (CL=F)": "CL=F",
-    "天然气 (NG=F)": "NG=F"
+    "稀土 ETF (REMX)": "REMX",
+    "锂电 ETF (LIT)": "LIT"
 }
 
 stock_list = {
@@ -41,116 +37,118 @@ stock_list = {
     "上大股份": "301522.SZ", "小米股份": "1810.HK", "泡泡玛特": "9992.HK"
 }
 
-# ----------------- 3. 数据引擎 -----------------
+# ----------------- 3. 增强型数据引擎 -----------------
 
 @st.cache_data(ttl=3600)
-def get_inventory_snapshot():
-    inv_map = {}
+def fetch_inventory():
+    """抓取库存数据"""
+    inv = {}
     try:
-        # SMM 爬取逻辑
-        urls = {"LME": "https://www.metal.com/LME/Inventory", "SHFE": "https://www.metal.com/SHFE/Inventory"}
-        for prefix, url in urls.items():
-            resp = requests.get(url, timeout=5)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            table = soup.find('table')
-            if table:
-                for row in table.find_all('tr')[1:]:
-                    cols = row.find_all(['td', 'th'])
-                    if len(cols) >= 2:
-                        name = cols[0].text.strip().replace('LME ', '').split('(')[0].strip()
-                        inv_map[f"{prefix}_{name}"] = f"{cols[1].text.strip()}"
+        url = "https://www.metal.com/LME/Inventory"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        table = soup.find('table')
+        if table:
+            for row in table.find_all('tr')[1:]:
+                cols = row.find_all(['td', 'th'])
+                if len(cols) >= 2:
+                    name = cols[0].text.strip().upper()
+                    inv[name] = cols[1].text.strip()
     except: pass
-    return inv_map
+    return inv
 
-@st.cache_data(ttl=1200)
-def get_investment_data():
+# ----------------- 4. 页面逻辑 -----------------
+with st.spinner('正在同步多源冗余数据...'):
+    inv_data = fetch_inventory()
+    # 尝试抓取 A 股深度数据
     try:
-        return ak.stock_zh_a_spot_em(), ak.stock_individual_fund_flow_rank_em(), ak.stock_zh_a_gdhs_em(), ak.stock_fhps_detail_em()
+        df_spot = ak.stock_zh_a_spot_em()
+        df_flow = ak.stock_individual_fund_flow_rank_em()
     except:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        df_spot, df_flow = pd.DataFrame(), pd.DataFrame()
 
-# ----------------- 4. 数据处理 -----------------
-with st.spinner('正在同步全球资产数据...'):
-    inv_snapshot = get_inventory_snapshot()
-    df_spot, df_flow, df_gdhs, df_div = get_investment_data()
-
-# 核心资产表逻辑
-china_results = []
-for name, yf_code in stock_list.items():
-    pure_code = yf_code.split('.')[0]
-    row = {"名称": name, "价格": "N/A", "涨跌%": 0.0, "PE(动)": "-", "PB": "-", "主力1d(万)": 0, "主力5d(万)": 0, "筹码变动%": "-", "最新分红": "无"}
-    if not df_spot.empty:
-        m = df_spot[df_spot['代码'] == pure_code]
-        if not m.empty:
-            row.update({"价格": m.iloc[0]['最新价'], "涨跌%": m.iloc[0]['涨跌幅'], "PE(动)": m.iloc[0]['市盈率-动态'], "PB": m.iloc[0]['市净率']})
-    if not df_flow.empty:
-        f = df_flow[df_flow['代码'] == pure_code]
-        if not f.empty:
-            row.update({"主力1d(万)": round(f.iloc[0]['今日主力净流入-净额']/10000, 0), "主力5d(万)": round(f.iloc[0]['5日主力净流入-净额']/10000, 0)})
-    if not df_gdhs.empty:
-        g = df_gdhs[df_gdhs['代码'] == pure_code]
-        if not g.empty: row.update({"筹码变动%": g.iloc[0]['股东户数逐季增减']})
-    if not df_div.empty:
-        d = df_div[df_div['代码'] == pure_code].head(1)
-        if not d.empty: row.update({"最新分红": f"{d.iloc[0]['派息']}(元/10股)"})
-    china_results.append(row)
-
-# ----------------- 5. 页面渲染 -----------------
-
-# [一] 大宗商品仓单 (保留并修复名称对齐)
+# [一] 全球大宗商品 & 实时铜金比
 st.header("🌍 全球大宗商品 & 实时仓单快照")
-com_data = []
+com_res = []
+cu_p, au_p = 1.0, 1.0
+
 for label, ticker in com_tickers.items():
     try:
-        t = yf.Ticker(ticker).fast_info
-        com_data.append({
-            "项目": label, "最新价": round(t.last_price, 2), "涨跌幅%": round(((t.last_price/t.previous_close)-1)*100, 2),
-            "全球库存(LME)": inv_snapshot.get(f"LME_{label.split(' ')[0][1:]}", "查询中..."),
-            "中国库存(SHFE)": inv_snapshot.get(f"SHFE_{label.split(' ')[0][1:]}", "查询中...")
+        info = yf.Ticker(ticker).fast_info
+        price = info.last_price
+        chg = ((price / info.previous_close) - 1) * 100
+        # 为铜金比留存价格
+        if "HG=F" in ticker: cu_p = price
+        if "GC=F" in ticker: au_p = price
+        
+        com_res.append({
+            "项目": label, "最新价": round(price, 3), "涨跌幅%": round(chg, 2),
+            "全球库存(LME)": inv_data.get(label.split(' ')[0][1:].upper(), "无数据")
         })
     except: pass
-st.dataframe(pd.DataFrame(com_data).style.map(highlight_flow, subset=['涨跌幅%']), use_container_width=True)
 
-# [二] 核心资产表
+# 强制插入铜金比行
+com_res.append({
+    "项目": "📈 铜金比 (Cu/Au x 1000)", 
+    "最新价": round((cu_p / au_p) * 1000, 4), 
+    "涨跌幅%": "宏观指标", "全球库存(LME)": "---"
+})
+
+st.dataframe(pd.DataFrame(com_res).style.map(highlight_flow, subset=['涨跌幅%']), use_container_width=True)
+
+# [二] 核心资产表 (双链路修复)
 st.header("🧱 核心资产监控 (筹码/分红/资金流)")
-st.dataframe(pd.DataFrame(china_results).style.map(highlight_flow, subset=['涨跌%', '主力1d(万)', '主力5d(万)']).map(highlight_concentration, subset=['筹码变动%']), use_container_width=True, height=450)
+china_res = []
+for name, code in stock_list.items():
+    pure_code = code.split('.')[0]
+    # 默认值
+    row = {"名称": name, "价格": "N/A", "涨跌%": 0.0, "PE(动)": "-", "主力1d(万)": 0, "数据源": "Wait"}
+    
+    # 链路 A: AkShare (深度指标)
+    if not df_spot.empty and '代码' in df_spot.columns:
+        m = df_spot[df_spot['代码'] == pure_code]
+        if not m.empty:
+            row.update({"价格": m.iloc[0]['最新价'], "涨跌%": m.iloc[0]['涨跌幅'], "PE(动)": m.iloc[0]['市盈率-动态'], "数据源": "Domestic"})
+    
+    # 链路 B: Yahoo Finance (冗余价格保障)
+    if row["价格"] == "N/A":
+        try:
+            t = yf.Ticker(code).fast_info
+            row.update({"价格": round(t.last_price, 2), "涨跌%": round(((t.last_price/t.previous_close)-1)*100, 2), "数据源": "Global"})
+        except: pass
 
-# [三] 10年趋势穿透 (大宗回归 + 计算对齐修复)
+    # 资金流匹配
+    if not df_flow.empty and '代码' in df_flow.columns:
+        f = df_flow[df_flow['代码'] == pure_code]
+        if not f.empty: row.update({"主力1d(万)": round(f.iloc[0]['今日主力净流入-净额']/10000, 0)})
+        
+    china_res.append(row)
+
+st.dataframe(pd.DataFrame(china_res).style.map(highlight_flow, subset=['涨跌%', '主力1d(万)']), use_container_width=True)
+
+# [三] 10年趋势 (计算对齐修复)
 st.header("📈 价格走势穿透 (10年长周期历史数据)")
+trend_opts = {"铜金比": "RATIO"}
+trend_opts.update(com_tickers)
+trend_opts.update(stock_list)
 
-# 整合选择项：铜金比 + 大宗商品 + 个股
-trend_options = {"铜金比": "RATIO"}
-trend_options.update(com_tickers)
-trend_options.update(stock_list)
-
-sel_label = st.selectbox("选择分析标的 (含大宗商品)", options=list(trend_options.keys()))
-sel_ticker = trend_options[sel_label]
+sel = st.selectbox("选择分析标的", options=list(trend_opts.keys()))
+ticker = trend_opts[sel]
 
 try:
-    if sel_ticker == "RATIO":
-        # 修复关键：抓取数据并强制按日期对齐
+    if ticker == "RATIO":
         cu = yf.download("HG=F", period="10y", progress=False)['Close']
         au = yf.download("GC=F", period="10y", progress=False)['Close']
-        
-        # 使用 Pandas concat 强制对齐两个 Series 的日期索引
         combined = pd.concat([cu, au], axis=1, join='inner')
         combined.columns = ['Cu', 'Au']
-        
-        ratio = (combined['Cu'] / combined['Au']) * 1000
-        fig = px.line(x=combined.index, y=ratio, title="宏观经济长周期：铜金比 (10年对齐趋势)", template="plotly_dark")
-        fig.update_yaxes(title="Copper/Gold Ratio")
+        fig = px.line(x=combined.index, y=(combined['Cu']/combined['Au'])*1000, title="铜金比 10年周期", template="plotly_dark")
     else:
-        hist = yf.download(sel_ticker, period="10y", progress=False)['Close']
-        # 压平 MultiIndex 避免 yf 升级后的报错
-        y_vals = hist.values.flatten()
-        fig = px.line(x=hist.index, y=y_vals, title=f"{sel_label} 10年价格走势", template="plotly_dark")
-        fig.update_yaxes(title="Price")
-
-    fig.update_layout(dragmode='zoom', hovermode='x unified')
+        hist = yf.download(ticker, period="10y", progress=False)['Close']
+        fig = px.line(x=hist.index, y=hist.values.flatten(), title=f"{sel} 10年趋势", template="plotly_dark")
+    
     st.plotly_chart(fig, use_container_width=True)
-    st.info("💡 提示：大宗商品现已回归。鼠标在图表上拖动可局部放大查看 2016-2026 的细节。")
-
 except Exception as e:
-    st.error(f"图表渲染失败: {e}")
+    st.error(f"图表加载失败: {e}")
 
-st.caption(f"系统稳定运行中 | 铜金比算法已对齐 | 最后同步: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"最后刷新: {datetime.now().strftime('%H:%M:%S')} | 已激活冗余数据链路")
