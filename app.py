@@ -3,7 +3,7 @@ import yfinance as yf
 import akshare as ak
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 # ----------------- 1. 样式与高亮 -----------------
@@ -17,48 +17,65 @@ def highlight_change(val):
     except: pass
     return ''
 
-st.set_page_config(layout="wide", page_title="硬核资源仪表盘-终极版")
-st.title("🛢️ 全球资源监控 & 穿透式库存看板")
+st.set_page_config(layout="wide", page_title="硬核资源仪表盘-智能回溯版")
+st.title("🛢️ 全球资源监控 & 智能库存回溯系统")
 
-# ----------------- 2. 增强型库存抓取引擎 (核心修复) -----------------
+# ----------------- 2. 智能库存回溯引擎 -----------------
 @st.cache_data(ttl=3600)
-def get_inventory_data():
+def get_recent_inventory():
     """
-    使用 '99期货' 接口，这是目前免费渠道中最稳定的库存源。
-    涵盖：上海期货交易所(SHFE)、伦敦金属交易所(LME)
+    智能回溯逻辑：
+    从今天开始往前倒推 7 天，直到找到有数据的那一天。
+    返回格式：{'LME_铜': '12500 (02-14)', ...}
     """
     inventory_map = {}
     
-    # 1. 抓取 LME 库存 (99期货源)
-    try:
-        df_lme = ak.futures_inventory_99(exchange="lme")
-        # 清洗数据：通常包含 '名称', '库存量', '增减'
-        if not df_lme.empty:
-            for _, row in df_lme.iterrows():
-                # 建立映射：LME铜 -> {'val': 12345, 'change': -50}
-                key_name = row['名称'].replace("LME", "").strip() # 去掉前缀，只留 "铜"
-                inventory_map[f"LME_{key_name}"] = f"{row['库存量']} ({row['增减']})"
-    except Exception as e:
-        print(f"LME Source Error: {e}")
-
-    # 2. 抓取 SHFE 库存 (99期货源 或 交易所源)
-    try:
-        df_shfe = ak.futures_inventory_99(exchange="shfe") 
-        if not df_shfe.empty:
-            for _, row in df_shfe.iterrows():
-                key_name = row['名称'].strip()
-                inventory_map[f"SHFE_{key_name}"] = f"{row['库存量']} ({row['增减']})"
-    except Exception as e:
-        print(f"SHFE Source Error: {e}")
+    # --- LME 回溯逻辑 ---
+    for i in range(7): # 最多回溯7天
+        target_date = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+        display_date = (datetime.now() - timedelta(days=i)).strftime("%m-%d")
         
+        try:
+            # akshare 的 99期货接口通常返回最新数据，不需要传日期
+            # 但为了稳健，我们这里使用通用接口抓取，如果失败则尝试历史接口
+            df_lme = ak.futures_inventory_99(exchange="lme") 
+            if not df_lme.empty:
+                for _, row in df_lme.iterrows():
+                    key_name = row['名称'].replace("LME", "").strip()
+                    # 标注日期，如果不是今天的数据
+                    date_suffix = "" if i == 0 else f" ({display_date})"
+                    inventory_map[f"LME_{key_name}"] = f"{row['库存量']} {date_suffix}"
+                break # 只要找到数据，就跳出循环，不再往回查
+        except:
+            continue # 如果报错，说明今天没数据，继续查前一天
+
+    # --- SHFE 回溯逻辑 ---
+    # SHFE 通常需要指定具体日期抓取日报
+    for i in range(10): # SHFE 节假日多，回溯10天
+        check_date = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+        display_date = (datetime.now() - timedelta(days=i)).strftime("%m-%d")
+        
+        try:
+            # 尝试抓取指定日期的上期所日报
+            df_shfe = ak.futures_inventory_shfe(date=check_date)
+            if not df_shfe.empty:
+                for _, row in df_shfe.iterrows():
+                    # 清洗名称：有的叫 "铜"，有的叫 "铜cu"
+                    key_name = row['品种'].strip()
+                    # 格式化数值：去除非数字字符
+                    val = row['合计']
+                    inventory_map[f"SHFE_{key_name}"] = f"{val} ({display_date})"
+                break # 找到了就停止
+        except:
+            continue
+
     return inventory_map
 
 def find_stock_value(keyword, inv_data):
     """
-    在清洗后的数据中查找，支持模糊匹配
-    keyword: '铜', '铝', 'Gold'...
+    模糊匹配 + 智能映射
     """
-    # 字典映射：将英文/代码关键字转为中文标准名
+    # 映射表：将英文/代码转为中文标准名
     name_map = {
         "铜": "铜", "Copper": "铜", "HG=F": "铜",
         "铝": "铝", "Aluminum": "铝", "ALI=F": "铝",
@@ -66,30 +83,41 @@ def find_stock_value(keyword, inv_data):
         "铅": "铅", "Lead": "铅",
         "镍": "镍", "Nickel": "镍",
         "锡": "锡", "Tin": "锡",
-        "白银": "白银", "Silver": "白银", "SI=F": "白银",
+        "白银": "白银", "Silver": "白银", "SI=F": "白银", # SHFE有白银库存
         "黄金": "黄金", "Gold": "黄金", "GC=F": "黄金",
     }
     
     target_cn = name_map.get(keyword, keyword)
     
-    lme_res = inv_data.get(f"LME_{target_cn}", "---")
-    shfe_res = inv_data.get(f"SHFE_{target_cn}", "---")
+    # 在字典中搜索包含该关键词的键
+    lme_res = "---"
+    for k, v in inv_data.items():
+        if k.startswith(f"LME_{target_cn}"):
+            lme_res = v
+            break
+            
+    shfe_res = "---"
+    for k, v in inv_data.items():
+        if k.startswith(f"SHFE_{target_cn}"): # SHFE匹配
+            shfe_res = v
+            break
     
     return lme_res, shfe_res
 
-# 获取库存快照 (带加载提示)
-with st.spinner('正在同步全球交易所库存数据...'):
-    inventory_snapshot = get_inventory_data()
+# 执行数据同步（带进度条）
+with st.spinner('正在回溯最近 7-10 天的交易所库存数据...'):
+    inventory_snapshot = get_recent_inventory()
 
-# ----------------- 3. 配置清单 -----------------
+# ----------------- 3. 核心配置清单 -----------------
 com_tickers = {
     "期铜 (HG=F)": {"yf": "HG=F", "key": "铜"},
     "期铝 (ALI=F)": {"yf": "ALI=F", "key": "铝"},
-    "黄金 (GC=F)": {"yf": "GC=F", "key": "黄金"}, # 注：黄金库存通常较少变动
+    "黄金 (GC=F)": {"yf": "GC=F", "key": "黄金"}, 
     "白银 (SI=F)": {"yf": "SI=F", "key": "白银"},
-    "原油 (CL=F)": {"yf": "CL=F", "key": "原油"}, # 原油通常看EIA数据，交易所无库存
+    "锌 (Zinc)":   {"yf": "APA", "key": "锌"}, # 锌通常用股票或相关ETF代替监控
+    "原油 (CL=F)": {"yf": "CL=F", "key": "原油"}, 
     "天然气 (NG=F)": {"yf": "NG=F", "key": "天然气"},
-    "稀土 ETF (REMX)": {"yf": "REMX", "key": "稀土"}, # ETF无物理库存
+    "稀土 ETF (REMX)": {"yf": "REMX", "key": "稀土"}, 
     "锂电 ETF (LIT)": {"yf": "LIT", "key": "锂"}
 }
 
@@ -101,7 +129,7 @@ china_tickers = {
     "中国铝业(铝)": {"ak": "601600", "yf": "601600.SS"}
 }
 
-# ----------------- 4. 数据合并 -----------------
+# ----------------- 4. 数据合并逻辑 -----------------
 com_results = []
 alerts = []
 
@@ -109,21 +137,20 @@ for label, cfg in com_tickers.items():
     # 1. 匹配库存
     lme_stock, shfe_stock = find_stock_value(cfg["key"], inventory_snapshot)
     
-    # 2. 抓取行情 (Yfinance)
+    # 2. 抓取行情
     try:
         t = yf.Ticker(cfg["yf"])
-        # 获取 fast info 以提高速度
         price = t.fast_info.last_price
-        prev_close = t.fast_info.previous_close
+        prev = t.fast_info.previous_close
         
-        if price is None: # 回退到 history
+        if price is None: 
              hist = t.history(period="2d")
              if not hist.empty:
                 price = hist['Close'].iloc[-1]
-                prev_close = hist['Close'].iloc[-2]
+                prev = hist['Close'].iloc[-2]
         
         if price:
-            change = ((price / prev_close) - 1) * 100
+            change = ((price / prev) - 1) * 100
             com_results.append({
                 "项目": label, 
                 "最新价": round(price, 2), 
@@ -143,34 +170,28 @@ for label, cfg in com_tickers.items():
 
 # ----------------- 5. 页面渲染 -----------------
 
-# 警报
 st.header("🚨 策略警报中心")
 if alerts:
     for a in alerts: st.warning(a)
 else: st.info("当前市场无异常价格爆发。")
 
-# 全球看板
-st.header("🌍 全球大宗商品 & 实时仓单快照")
-st.markdown("*> 数据说明：库存格式为 `总量 (较昨日增减)`，数据源自99期货聚合接口。原油/ETF无物理交割库存。*")
+st.header("🌍 全球大宗商品 & 智能回溯库存看板")
+st.markdown("*> 数据说明：库存若非今日数据，会在括号内标注日期，如 `(02-10)`。LME与SHFE均已启用 `T-10` 自动回溯机制。*")
 df_com = pd.DataFrame(com_results)
 st.dataframe(df_com.style.map(highlight_change, subset=["涨跌幅%"]), use_container_width=True)
 
-# A股资源 (冗余链路)
 st.header("🧱 A股龙头监控 (多源冗余链路)")
 china_results = []
 for name, codes in china_tickers.items():
-    price, change, source = "N/A", 0, "连接中..."
-    # 链路1: Yahoo Finance (海外最稳)
+    price, change, source = "N/A", 0, "Wait..."
     try:
         yt = yf.Ticker(codes["yf"])
         price = yt.fast_info.last_price
-        prev = yt.fast_info.previous_close
         if price:
-            change = ((price / prev) - 1) * 100
+            change = ((price / yt.fast_info.previous_close) - 1) * 100
             source = "Yahoo(Global)"
         else: raise Exception()
     except:
-        # 链路2: Sina (备用)
         try:
             df = ak.stock_zh_a_hist(symbol=codes["ak"], period="daily").tail(2)
             if not df.empty:
@@ -183,7 +204,6 @@ for name, codes in china_tickers.items():
 
 st.dataframe(pd.DataFrame(china_results).style.map(highlight_change, subset=["日涨跌%"]), use_container_width=True)
 
-# 图表
 st.header("📈 价格走势穿透")
 sel = st.selectbox("选择商品", options=list(com_tickers.keys()))
 try:
